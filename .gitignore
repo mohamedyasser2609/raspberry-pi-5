@@ -1,0 +1,22 @@
+# ROS 2 Build folders
+install/
+build/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Workspace
+.vscode/
+.idea/
+
+# Local system files
+.DS_Store
+*.swp
+# PDF and GV (from tf2_tools)
+*.pdf
+*.gv
+*.save
