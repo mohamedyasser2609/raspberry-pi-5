@@ -4,18 +4,18 @@ slam_toolbox:
     odom_frame: odom
     map_frame: map
     base_frame: base_link
-
+    use_odom: true
     odom_topic: /odometry/filtered
     scan_topic: /scan
 
     mode: mapping
 
     use_sim_time: false
-
+    publish_tf: true
     resolution: 0.05
 
     max_laser_range: 12.0
-    transform_timeout: 0.2
+    transform_timeout: 0.5
     tf_buffer_duration: 30.0
 
     # =========================
@@ -33,6 +33,7 @@ slam_toolbox:
     map_update_interval: 0.5
 
     use_scan_matching: true
+    use_scan_barycenter: true
     do_loop_closing: true
 
     stack_size_to_use: 40000000

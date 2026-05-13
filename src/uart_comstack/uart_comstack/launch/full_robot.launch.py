@@ -57,12 +57,12 @@ def generate_launch_description():
         ),
 
         # ================= GPS =================
-        Node(
-            package='uart_comstack',
-            executable='gps_node',
-            name='gps_node',
-            output='screen'
-        ),
+    #    Node(
+    #        package='uart_comstack',
+    #        executable='gps_node',
+    #        name='gps_node',
+    #        output='screen'
+    #    ),
 
         # ================= RAW ODOM =================
         Node(
@@ -82,38 +82,38 @@ def generate_launch_description():
         ),
 
         # ================= NAVSAT TRANSFORM =================
-        Node(
-            package='robot_localization',
-            executable='navsat_transform_node',
-            name='navsat_transform',
-            output='screen',
-            parameters=[{
-                'use_sim_time': False,
-                'magnetic_declination_radians': 0.0,
-                'yaw_offset': 0.0,
-                'zero_altitude': True,
-                'broadcast_utm_transform': True,
-                'publish_filtered_gps': True,
-                'use_odometry_yaw': True
-            }],
-            remappings=[
-                ('imu', '/imu/data_raw'),
-                ('gps/fix', '/gps/fix'),
-                ('odometry/filtered', '/odometry/filtered')
-            ]
-        ),
+    #    Node(
+    #        package='robot_localization',
+    #        executable='navsat_transform_node',
+    #        name='navsat_transform',
+    #        output='screen',
+    #        parameters=[{
+    #            'use_sim_time': False,
+    #            'magnetic_declination_radians': 0.0,
+    #            'yaw_offset': 0.0,
+    #            'zero_altitude': True,
+    #            'broadcast_utm_transform': True,
+    #           'publish_filtered_gps': True,
+    #            'use_odometry_yaw': True
+    #        }],
+    #        remappings=[
+    #       ('imu', '/imu/data_raw'),
+    #            ('gps/fix', '/gps/fix'),
+    #            ('odometry/filtered', '/odometry/filtered')
+    #        ]
+    #    ),
 
         # ================= GLOBAL EKF =================
-        Node(
-            package='robot_localization',
-            executable='ekf_node',
-            name='global_ekf',
-            output='screen',
-            parameters=[global_ekf_config],
-            remappings=[
-                ('odometry/filtered', '/odometry/filtered_global')
-            ]
-        ),
+     # Node(
+     #       package='robot_localization',
+      #      executable='ekf_node',
+       #     name='global_ekf',
+        #    output='screen',
+       #     parameters=[global_ekf_config],
+       #     remappings=[
+       #         ('odometry/filtered', '/odometry/filtered_global')
+       #     ]
+       # ),
 
         # ================= LIDAR =================
         Node(
@@ -132,8 +132,7 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0
         ),
-
-        # ================= TF BASE → LASER =================
+# ================= TF BASE → LASER =================
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -144,9 +143,8 @@ def generate_launch_description():
                 '0', '0', '0',
                 'base_link',
                 'laser'
-            ]
+          ]
         ),
-
         # ================= SLAM TOOLBOX =================
         Node(
             package='slam_toolbox',
@@ -171,8 +169,12 @@ def generate_launch_description():
             executable='lifecycle_manager',
             name='lifecycle_manager_slam',
             output='screen',
-            parameters=[{'autostart': True},
-                        {'node_names': ['slam_toolbox']}]
+            parameters=[{
+                'use_sim_time': False,
+                'autostart': True,
+                'node_names': ['slam_toolbox'],
+                'bond_timeout': 10.0
+            }]
         ),
 
         # ================= NAV2 =================

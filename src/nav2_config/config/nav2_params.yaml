@@ -16,11 +16,12 @@ planner_server:
   ros__parameters:
     use_sim_time: false
     expected_planner_frequency: 10.0
-
     planner_plugins: ["GridBased"]
-
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.8
+      use_astar: false
+      allow_unknown: true
 
 controller_server:
   ros__parameters:
@@ -28,10 +29,26 @@ controller_server:
     controller_frequency: 10.0
     odom_topic: /odometry/filtered
     controller_plugins: ["FollowPath"]
+    goal_checker_plugins: ["goal_checker"]
+
+    goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      xy_goal_tolerance: 0.20
+      yaw_goal_tolerance: 3.14  # 🟢 INCREASED: Ignore final heading error to prevent end-of-goal spinning
+      stateful: true
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
-
+      transform_tolerance: 1.0  # 🟢 ADDED: Allows 1s of lag between Pi 5 and Tiva-C before failing
+      min_vel_x: 0.05
+      max_vel_x: 0.26
+      min_vel_theta: 0.2        # 🟢 ADDED: Minimum power to overcome track friction
+      max_vel_theta: 0.6        # 🔴 LOWERED: Capping spin speed to prevent sensor motion blur
+      acc_lim_x: 0.8            # 🔴 LOWERED: Smoother starts for the 20kg chassis
+      acc_lim_theta: 0.5        # 🔴 LOWERED: Prevent jerky rotations
+      vx_samples: 20
+      vtheta_samples: 20
+      sim_time: 1.5
       critics:
         - RotateToGoal
         - Oscillation
@@ -41,20 +58,19 @@ controller_server:
         - PathDist
         - GoalDist
 
-      min_vel_x: 0.0
-      max_vel_x: 0.26
-      min_vel_theta: -1.0
-      max_vel_theta: 1.0
-
-      acc_lim_x: 2.5
-      acc_lim_theta: 3.2
-
-      decel_lim_x: -2.5
-      decel_lim_theta: -3.2
-
-      vx_samples: 20
-      vtheta_samples: 20
-      sim_time: 1.5
+      # 🟢 CRITIC TUNING: Force forward motion over alignment
+      PathAlign:
+        scale: 5.0
+      GoalAlign:
+        scale: 5.0
+      PathDist:
+        scale: 100.0   # 🟢 INCREASED: Massive priority on moving forward along the path
+      GoalDist:
+        scale: 80.0    # 🟢 INCREASED: Massive priority on getting closer to the 2m goal
+      RotateToGoal:
+        scale: 0.0     # 🟢 ZEROED: Force robot to drive forward even if not perfectly aimed
+      BaseObstacle:
+        scale: 0.02
 
 local_costmap:
   local_costmap:
@@ -62,28 +78,35 @@ local_costmap:
       use_sim_time: false
       global_frame: odom
       robot_base_frame: base_link
-      update_frequency: 5.0
-      publish_frequency: 2.0
+      transform_tolerance: 1.0    # 🟢 ADDED: Stop costmap from "blanking out" due to TF lag
       rolling_window: true
-      width: !!int 3
-      height: !!int 3
-      resolution: !!float 0.05
-      footprint: "[ [0.2, 0.2], [0.2, -0.2], [-0.2, -0.2], [-0.2, 0.2] ]"
-
+      width: 6
+      height: 6
+      resolution: 0.05
+      update_frequency: 2.0       # 🔴 LOWERED: Reduce CPU load to fix "Planner missed rate" errors
+      publish_frequency: 1.0      # 🔴 LOWERED: Reduce CPU load
+      footprint: "[[0.35, 0.25], [0.35, -0.25], [-0.35, -0.25], [-0.35, 0.25]]"
       plugins: ["obstacle_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
         observation_sources: scan
         scan:
           topic: /scan
-          max_obstacle_height: 2.0
-          clearing: true
+          data_type: "LaserScan"
           marking: true
+          clearing: true
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.3 # 🟢 INCREASED: Filter out the robot's own chassis/tracks
+          raytrace_max_range: 7.0
+          raytrace_min_range: 0.3
+          sensor_frame: laser
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.5
+        inflation_radius: 0.20    # 🟢 REDUCED: Prevent "No legal trajectory" in narrow corridors
+        cost_scaling_factor: 3.0
 
 global_costmap:
   global_costmap:
@@ -91,12 +114,14 @@ global_costmap:
       use_sim_time: false
       global_frame: map
       robot_base_frame: base_link
+      transform_tolerance: 1.0    # 🟢 ADDED
+      rolling_window: false
+      width: 20
+      height: 20
+      resolution: 0.05
       update_frequency: 1.0
-      width: !!int 10
-      height: !!int 10
-      resolution: !!float 0.05
-      footprint: "[ [0.2, 0.2], [0.2, -0.2], [-0.2, -0.2], [-0.2, 0.2] ]"
-
+      publish_frequency: 0.5      # 🔴 LOWERED
+      footprint: "[[0.35, 0.25], [0.35, -0.25], [-0.35, -0.25], [-0.35, 0.25]]"
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
       static_layer:
@@ -105,58 +130,43 @@ global_costmap:
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
         observation_sources: scan
         scan:
           topic: /scan
-          max_obstacle_height: 2.0
-          clearing: true
+          data_type: "LaserScan"
           marking: true
+          clearing: true
+          obstacle_min_range: 0.3
+          sensor_frame: laser
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        inflation_radius: 0.5
+        inflation_radius: 0.20    # 🟢 REDUCED
+        cost_scaling_factor: 3.0
 
 velocity_smoother:
   ros__parameters:
     use_sim_time: false
     smoothing_frequency: 20.0
-    scale_velocities: false
-    feedback: "OPEN_LOOP"
-    max_velocity: [0.26, 0.0, 1.0]
-    min_velocity: [0.0, 0.0, -1.0]
-    max_accel: [2.5, 0.0, 3.2]
-    max_decel: [-2.5, 0.0, -3.2]
+    max_velocity: [0.26, 0.0, 0.6] # 🔴 MATCHED with max_vel_theta
+    min_velocity: [-0.26, 0.0, -0.6]
+    max_accel: [0.8, 0.0, 0.5]     # 🔴 MATCHED with controller limits
+    max_decel: [-0.8, 0.0, -0.5]
     odom_topic: /odometry/filtered
-    odom_duration: 0.1
 
 collision_monitor:
   ros__parameters:
     use_sim_time: false
     base_frame_id: base_link
     odom_frame_id: odom
-    transform_tolerance: 0.5
-    source_timeout: 5.0
-    stop_pub_timeout: 2.0
-
+    transform_tolerance: 1.0       # 🟢 ADDED: Stop the monitor from aborting linear motion
     observation_sources: ["scan"]
-
     scan:
       type: "scan"
       topic: "/scan"
-
     polygons: ["PolygonStop"]
-
     PolygonStop:
       type: "polygon"
-      points: '[[0.25, 0.22], [0.25, -0.22], [-0.25, -0.22], [-0.25, 0.22]]'
+      points: '[[0.35, 0.25], [0.35, -0.25], [-0.35, -0.25], [-0.35, 0.25]]'
       action_type: "stop"
-      max_points: 3
-      visualize: true
-      polygon_pub_topic: "polygon_stop"
-
-docking_server:
-  ros__parameters:
-    use_sim_time: false
-    dock_plugins: ["simple_charging_dock"]
-    simple_charging_dock:
-      plugin: "opennav_docking::SimpleChargingDock"

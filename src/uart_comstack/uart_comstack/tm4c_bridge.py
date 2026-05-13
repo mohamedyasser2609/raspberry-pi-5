@@ -12,21 +12,19 @@ import threading
 import time
 
 # ==========================
-# PROTOCOL
+# PROTOCOL CONSTANTS
 # ==========================
-START_BYTE       = 0xAA
-END_BYTE         = 0x55
+START_BYTE          = 0xAA
+END_BYTE            = 0x55
 
-CMD_PING         = 0x01
-CMD_ACK          = 0x02
-CMD_NACK         = 0x03
-
-CMD_MOTOR_STOP   = 0x11
-CMD_TWIST_CMD    = 0x12   # ⭐ الجديد
-
-CMD_IMU_DATA     = 0x22
-CMD_ENCODER_DATA = 0x23
-
+CMD_PING            = 0x01
+CMD_ACK             = 0x02
+CMD_TIME_SYNC       = 0x05  # New: Time Synchronization
+CMD_TWIST_CMD       = 0x12
+CMD_MOTOR_STOP      = 0x11
+CMD_IMU_DATA        = 0x22
+CMD_ENCODER_DATA    = 0x23
+CMD_STATUS          = 0x30
 
 class TM4CBridgeNode(Node):
 
@@ -40,43 +38,42 @@ class TM4CBridgeNode(Node):
         port = self.get_parameter('serial_port').value
         baud = self.get_parameter('baud_rate').value
 
-        # Serial
+        # Serial Connection
         try:
-            self.ser = serial.Serial(port, baud, timeout=0.01)
+            self.ser = serial.Serial(port, baud, timeout=0.1)
             self.get_logger().info(f'Serial opened: {port} @ {baud}')
         except serial.SerialException as e:
             self.get_logger().error(f'Cannot open serial: {e}')
             raise
 
-        # Publishers
+        # ROS Publishers & Subscribers
         self.encoder_pub = self.create_publisher(Int32MultiArray, '/encoder_ticks', 10)
         self.imu_pub = self.create_publisher(Imu, '/imu/data_raw', 10)
-        self.odom_pub = self.create_publisher(Odometry, '/odom_raw', 10)
         self.cmd_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
 
-        # Stats
+        # Stats counters
         self.rx_count = 0
         self.tx_count = 0
         self.error_count = 0
 
-        # Timeout safety
+        # Safety Heartbeat
         self.last_cmd_time = 0.0
         self.cmd_timeout = 0.5
 
-        # Threads
+        # Background Receiver Thread
         self.running = True
         self.rx_thread = threading.Thread(target=self.receive_loop, daemon=True)
         self.rx_thread.start()
 
         # Timers
-        self.create_timer(2.0, self.send_ping)
+        self.create_timer(1.0, self.send_time_sync) # Sync time every 1s
         self.create_timer(5.0, self.print_stats)
         self.create_timer(0.1, self.check_cmd_timeout)
 
-        self.get_logger().info('TM4C Bridge (TWIST MODE) started')
+        self.get_logger().info('TM4C Bridge (SYNC MODE) started')
 
     # ==========================
-    # PACKET
+    # PROTOCOL HELPERS
     # ==========================
     def calculate_checksum(self, command, length, data):
         cs = command ^ length
@@ -88,184 +85,144 @@ class TM4CBridgeNode(Node):
         length = len(data)
         checksum = self.calculate_checksum(command, length, data)
         packet = bytes([START_BYTE, command, length]) + data + bytes([checksum, END_BYTE])
-
         try:
             self.ser.write(packet)
             self.tx_count += 1
-        except serial.SerialException as e:
-            self.get_logger().error(f'TX error: {e}')
+        except Exception as e:
+            self.get_logger().error(f'TX Error: {e}')
 
     # ==========================
-    # CMD VEL (TWIST)
+    # OUTGOING: TIME SYNC
+    # ==========================
+    def send_time_sync(self):
+        """Sends current RPi Wall Time to Tiva to synchronize clocks."""
+        now = self.get_clock().now()
+        sec, nsec = now.seconds_nanoseconds()
+        data = struct.pack('<II', sec, nsec)
+        self.send_packet(CMD_TIME_SYNC, data)
+
+    # ==========================
+    # OUTGOING: VELOCITY
     # ==========================
     def cmd_vel_callback(self, msg):
-        # scale (m/s → mm/s)
-        linear_mmps = int(msg.linear.x * 1000.0)
-        angular_mrads = int(msg.angular.z * 1000.0)
+        # Convert m/s to mm/s and rad/s to mrad/s
+        v_mmps = int(msg.linear.x * 1000.0)
+        w_mrads = int(msg.angular.z * 1000.0)
 
-        # clamp
-        linear_mmps = max(-32768, min(32767, linear_mmps))
-        angular_mrads = max(-32768, min(32767, angular_mrads))
-
-        data = struct.pack('<hh', linear_mmps, angular_mrads)
+        # Pack into 4 bytes (little-endian sint16, sint16)
+        data = struct.pack('<hh', 
+                           max(-32768, min(32767, v_mmps)), 
+                           max(-32768, min(32767, w_mrads)))
         self.send_packet(CMD_TWIST_CMD, data)
-
         self.last_cmd_time = time.monotonic()
 
-    def send_ping(self):
-        self.send_packet(CMD_PING)
-
     def check_cmd_timeout(self):
-        if self.last_cmd_time == 0.0:
-            return
-
-        if time.monotonic() - self.last_cmd_time > self.cmd_timeout:
-            # stop robot
-            data = struct.pack('<hh', 0, 0)
-            self.send_packet(CMD_TWIST_CMD, data)
+        if self.last_cmd_time > 0 and (time.monotonic() - self.last_cmd_time > self.cmd_timeout):
+            self.send_packet(CMD_TWIST_CMD, struct.pack('<hh', 0, 0))
             self.last_cmd_time = 0.0
 
     # ==========================
-    # RECEIVE LOOP
+    # INCOMING: RECEIVE LOOP
     # ==========================
     def receive_loop(self):
         while self.running:
             try:
-                byte = self.ser.read(1)
-
-                if len(byte) == 0 or byte[0] != START_BYTE:
+                # Find Start Byte
+                if self.ser.read(1) != bytes([START_BYTE]):
                     continue
 
+                # Read Header (CMD + LEN)
                 header = self.ser.read(2)
-                if len(header) < 2:
-                    self.error_count += 1
-                    continue
+                if len(header) < 2: continue
+                cmd, length = header
 
-                command, length = header
-
-                if length > 120:
-                    self.error_count += 1
-                    continue
-
+                # Read Data
                 data = self.ser.read(length) if length > 0 else b''
-                if len(data) < length:
-                    self.error_count += 1
-                    continue
+                if len(data) < length: continue
 
+                # Read Footer (Checksum + END)
                 footer = self.ser.read(2)
-                if len(footer) < 2:
-                    self.error_count += 1
-                    continue
-
+                if len(footer) < 2: continue
                 checksum, end_byte = footer
 
-                if end_byte != END_BYTE or checksum != self.calculate_checksum(command, length, data):
+                # Validation
+                if end_byte == END_BYTE and checksum == self.calculate_checksum(cmd, length, data):
+                    self.rx_count += 1
+                    self.handle_packet(cmd, data)
+                else:
                     self.error_count += 1
-                    continue
-
-                self.rx_count += 1
-                self.handle_packet(command, data)
 
             except Exception as e:
-                self.get_logger().error(f'RX error: {e}')
+                self.get_logger().error(f'RX loop error: {e}')
                 time.sleep(0.01)
 
-    # ==========================
-    # HANDLE PACKETS
-    # ==========================
     def handle_packet(self, command, data):
-
-        if command == CMD_ENCODER_DATA and len(data) >= 12:
+        """Dispatches received packets to publishers."""
+        if command == CMD_ENCODER_DATA:
             self.publish_encoder(data)
-
-        elif command == CMD_IMU_DATA and len(data) >= 12:
+        elif command == CMD_IMU_DATA:
             self.publish_imu(data)
-
-        elif command == CMD_PING:
-            self.send_packet(CMD_ACK)
+        elif command == CMD_ACK:
+            pass # Tiva confirmed a command
 
     # ==========================
-    # ENCODER
+    # PUBLISHERS
     # ==========================
     def publish_encoder(self, data):
-        left_ticks, right_ticks, left_vel, right_vel = struct.unpack('<iihh', data[:12])
+        # Format: <IIiihh (TimestampSec, TimestampNsec, L_Ticks, R_Ticks, L_Vel, R_Vel)
+        if len(data) < 20: return
+        try:
+            sec, nsec, l_ticks, r_ticks, l_rpm, r_rpm = struct.unpack('<IIiihh', data[:20])
+            
+            msg = Int32MultiArray()
+            msg.data = [l_ticks, r_ticks]
+            self.encoder_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().warn(f"Encoder unpack error: {e}")
 
-        msg = Int32MultiArray()
-        msg.data = [left_ticks, right_ticks]
-        self.encoder_pub.publish(msg)
-
-    # ==========================
-    # IMU
-    # ==========================
     def publish_imu(self, data):
-        ax, ay, az, gx, gy, gz = struct.unpack('<hhhhhh', data[:12])
+        # Format: <IIhhhhhh (TimestampSec, TimestampNsec, Ax, Ay, Az, Gx, Gy, Gz)
+        if len(data) < 20: return
+        try:
+            sec, nsec, ax, ay, az, gx, gy, gz = struct.unpack('<IIhhhhhh', data[:20])
 
-        msg = Imu()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'imu_link'
+            msg = Imu()
+            msg.header.stamp.sec = sec
+            msg.header.stamp.nanosec = nsec
+            msg.header.frame_id = 'imu_link'
 
-        msg.linear_acceleration.x = ax / 100.0
-        msg.linear_acceleration.y = ay / 100.0
-        msg.linear_acceleration.z = az / 100.0
+            # Convert scaled ints back to real values (x100)
+            msg.linear_acceleration.x = ax / 100.0
+            msg.linear_acceleration.y = ay / 100.0
+            msg.linear_acceleration.z = az / 100.0
+            msg.angular_velocity.x = gx / 100.0
+            msg.angular_velocity.y = gy / 100.0
+            msg.angular_velocity.z = gz / 100.0
 
-        msg.angular_velocity.x = gx / 100.0
-        msg.angular_velocity.y = gy / 100.0
-        msg.angular_velocity.z = gz / 100.0
+            self.imu_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().warn(f"IMU unpack error: {e}")
 
-        msg.orientation.w = 1.0
-        msg.orientation.x = 0.0
-        msg.orientation.y = 0.0
-        msg.orientation.z = 0.0
-
-        msg.orientation_covariance[0] = 0.01
-        msg.orientation_covariance[4] = 0.01
-        msg.orientation_covariance[8] = 0.01
-
-        msg.angular_velocity_covariance[0] = 0.01
-        msg.angular_velocity_covariance[4] = 0.01
-        msg.angular_velocity_covariance[8] = 0.01
-
-        msg.linear_acceleration_covariance[0] = 0.01
-        msg.linear_acceleration_covariance[4] = 0.01
-        msg.linear_acceleration_covariance[8] = 0.01
-
-        self.imu_pub.publish(msg)
-
-    # ==========================
-    # STATS
-    # ==========================
     def print_stats(self):
-        self.get_logger().info(
-            f'Bridge Stats | RX: {self.rx_count} | TX: {self.tx_count} | Errors: {self.error_count}'
-        )
+        self.get_logger().info(f'Bridge Stats | RX: {self.rx_count} | TX: {self.tx_count} | Errors: {self.error_count}')
 
-    # ==========================
-    # SHUTDOWN
-    # ==========================
     def destroy_node(self):
         self.running = False
-
         if self.ser.is_open:
             self.send_packet(CMD_MOTOR_STOP)
-            time.sleep(0.05)
             self.ser.close()
-
         super().destroy_node()
-
 
 def main(args=None):
     rclpy.init(args=args)
     node = TM4CBridgeNode()
-
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
     finally:
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

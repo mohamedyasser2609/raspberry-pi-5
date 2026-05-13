@@ -1,6 +1,6 @@
 local_ekf:
   ros__parameters:
-
+    use_sim_time: false
     frequency: 15.0
     two_d_mode: true
 
@@ -22,9 +22,9 @@ local_ekf:
     imu0: /imu/data_raw
 
     imu0_config: [false, false, false,
-                  true, true, true,
+                  false, false, true,
                   false, false, false,
-                  true, true, true,
+                  false, false, true,
                   false, false, false]
 
     imu0_remove_gravitational_acceleration: true
