@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import Int32MultiArray
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Twist
@@ -26,13 +27,15 @@ CMD_IMU_DATA        = 0x22
 CMD_ENCODER_DATA    = 0x23
 CMD_STATUS          = 0x30
 
+TM4C_USB_PORT = '/dev/serial/by-path/platform-xhci-hcd.1-usb-0:1:1.0-port0'
+
 class TM4CBridgeNode(Node):
 
     def __init__(self):
         super().__init__('tm4c_bridge')
 
         # Parameters
-        self.declare_parameter('serial_port', '/dev/ttyAMA0')
+        self.declare_parameter('serial_port', TM4C_USB_PORT)
         self.declare_parameter('baud_rate', 115200)
 
         port = self.get_parameter('serial_port').value
@@ -40,7 +43,7 @@ class TM4CBridgeNode(Node):
 
         # Serial Connection
         try:
-            self.ser = serial.Serial(port, baud, timeout=0.1)
+            self.ser = self.open_serial(port, baud)
             self.get_logger().info(f'Serial opened: {port} @ {baud}')
         except serial.SerialException as e:
             self.get_logger().error(f'Cannot open serial: {e}')
@@ -55,6 +58,9 @@ class TM4CBridgeNode(Node):
         self.rx_count = 0
         self.tx_count = 0
         self.error_count = 0
+        self.ping_count = 0
+        self.ack_sent_count = 0
+        self.time_sync_count = 0
 
         # Safety Heartbeat
         self.last_cmd_time = 0.0
@@ -72,6 +78,12 @@ class TM4CBridgeNode(Node):
 
         self.get_logger().info('TM4C Bridge (SYNC MODE) started')
 
+    def open_serial(self, port, baud):
+        try:
+            return serial.Serial(port, baud, timeout=0.1, write_timeout=0.1, exclusive=True)
+        except TypeError:
+            return serial.Serial(port, baud, timeout=0.1, write_timeout=0.1)
+
     # ==========================
     # PROTOCOL HELPERS
     # ==========================
@@ -82,6 +94,9 @@ class TM4CBridgeNode(Node):
         return cs & 0xFF
 
     def send_packet(self, command, data=b''):
+        if not getattr(self, 'ser', None) or not self.ser.is_open:
+            return
+
         length = len(data)
         checksum = self.calculate_checksum(command, length, data)
         packet = bytes([START_BYTE, command, length]) + data + bytes([checksum, END_BYTE])
@@ -89,7 +104,8 @@ class TM4CBridgeNode(Node):
             self.ser.write(packet)
             self.tx_count += 1
         except Exception as e:
-            self.get_logger().error(f'TX Error: {e}')
+            if self.running and rclpy.ok():
+                self.get_logger().error(f'TX Error: {e}')
 
     # ==========================
     # OUTGOING: TIME SYNC
@@ -100,6 +116,7 @@ class TM4CBridgeNode(Node):
         sec, nsec = now.seconds_nanoseconds()
         data = struct.pack('<II', sec, nsec)
         self.send_packet(CMD_TIME_SYNC, data)
+        self.time_sync_count += 1
 
     # ==========================
     # OUTGOING: VELOCITY
@@ -127,22 +144,30 @@ class TM4CBridgeNode(Node):
     def receive_loop(self):
         while self.running:
             try:
+                if not self.ser.is_open:
+                    break
+
                 # Find Start Byte
                 if self.ser.read(1) != bytes([START_BYTE]):
                     continue
+                if not self.running:
+                    break
 
                 # Read Header (CMD + LEN)
                 header = self.ser.read(2)
-                if len(header) < 2: continue
+                if len(header) < 2:
+                    continue
                 cmd, length = header
 
                 # Read Data
                 data = self.ser.read(length) if length > 0 else b''
-                if len(data) < length: continue
+                if len(data) < length:
+                    continue
 
                 # Read Footer (Checksum + END)
                 footer = self.ser.read(2)
-                if len(footer) < 2: continue
+                if len(footer) < 2:
+                    continue
                 checksum, end_byte = footer
 
                 # Validation
@@ -152,8 +177,15 @@ class TM4CBridgeNode(Node):
                 else:
                     self.error_count += 1
 
+            except (serial.SerialException, OSError, TypeError) as e:
+                if self.running and rclpy.ok():
+                    self.error_count += 1
+                    self.get_logger().error(f'RX loop error: {e}')
+                break
             except Exception as e:
-                self.get_logger().error(f'RX loop error: {e}')
+                if self.running and rclpy.ok():
+                    self.error_count += 1
+                    self.get_logger().error(f'RX loop error: {e}')
                 time.sleep(0.01)
 
     def handle_packet(self, command, data):
@@ -162,6 +194,10 @@ class TM4CBridgeNode(Node):
             self.publish_encoder(data)
         elif command == CMD_IMU_DATA:
             self.publish_imu(data)
+        elif command == CMD_PING:
+            self.ping_count += 1
+            self.send_packet(CMD_ACK)
+            self.ack_sent_count += 1
         elif command == CMD_ACK:
             pass # Tiva confirmed a command
 
@@ -204,25 +240,50 @@ class TM4CBridgeNode(Node):
             self.get_logger().warn(f"IMU unpack error: {e}")
 
     def print_stats(self):
-        self.get_logger().info(f'Bridge Stats | RX: {self.rx_count} | TX: {self.tx_count} | Errors: {self.error_count}')
+        self.get_logger().info(
+            f'Bridge Stats | RX: {self.rx_count} | TX: {self.tx_count} | '
+            f'Errors: {self.error_count} | PING: {self.ping_count} | '
+            f'ACK_SENT: {self.ack_sent_count} | TIME_SYNC: {self.time_sync_count}'
+        )
 
     def destroy_node(self):
         self.running = False
-        if self.ser.is_open:
-            self.send_packet(CMD_MOTOR_STOP)
-            self.ser.close()
+
+        try:
+            if getattr(self, 'ser', None) and self.ser.is_open:
+                checksum = self.calculate_checksum(CMD_MOTOR_STOP, 0, b'')
+                packet = bytes([START_BYTE, CMD_MOTOR_STOP, 0, checksum, END_BYTE])
+                self.ser.write(packet)
+                self.ser.flush()
+        except Exception as e:
+            if rclpy.ok():
+                self.get_logger().warn(f'Serial stop error during shutdown: {e}')
+
+        if getattr(self, 'rx_thread', None) and self.rx_thread.is_alive():
+            self.rx_thread.join(timeout=0.3)
+
+        try:
+            if getattr(self, 'ser', None) and self.ser.is_open:
+                self.ser.close()
+        except Exception as e:
+            if rclpy.ok():
+                self.get_logger().warn(f'Serial close error: {e}')
+
         super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
-    node = TM4CBridgeNode()
+    node = None
     try:
+        node = TM4CBridgeNode()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

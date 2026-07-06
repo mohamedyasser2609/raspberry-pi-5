@@ -29,7 +29,7 @@ slam_toolbox:
     # =========================
     minimum_time_interval: 0.1
     scan_buffer_size: 30
-    max_laser_queue_size: 200
+    scan_queue_size: 50
     map_update_interval: 0.5
 
     use_scan_matching: true
@@ -37,3 +37,8 @@ slam_toolbox:
     do_loop_closing: true
 
     stack_size_to_use: 40000000
+lifecycle_manager_slam:
+  ros__parameters:
+    autostart: true
+    node_names: ['slam_toolbox']
+    use_bond: false
