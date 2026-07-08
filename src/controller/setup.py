@@ -23,7 +23,7 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': [  'ws_nav2_bridge = controller.websocket_to_nav2:main',
+        'console_scripts': [
             'controller = controller.controller:main',
         ],
     },

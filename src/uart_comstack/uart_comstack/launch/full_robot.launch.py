@@ -43,7 +43,11 @@ def generate_launch_description():
         'ekf.yaml'
     )
 
-    nav2_config = '/home/raspberrypi/project_ws/src/nav2_config/config/nav2_params.yaml'
+    nav2_config = os.path.join(
+        get_package_share_directory('nav2_config'),
+        'config',
+        'nav2_params.yaml'
+    )
 
     # Global EKF  GPS 
     # global_ekf_config = os.path.join(

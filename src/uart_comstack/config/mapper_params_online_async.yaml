@@ -1,6 +1,7 @@
 slam_toolbox:
   ros__parameters:
 
+    # === Frames ===
     odom_frame: odom
     map_frame: map
     base_frame: base_link
@@ -9,34 +10,39 @@ slam_toolbox:
     scan_topic: /scan
 
     mode: mapping
-
     use_sim_time: false
     publish_tf: true
     resolution: 0.05
 
+    # === Laser ===
     max_laser_range: 12.0
-    transform_timeout: 0.5
+    transform_timeout: 1.5         # ⬆ Increased from 0.5 to prevent multi-machine TF timeouts over Ethernet
     tf_buffer_duration: 30.0
 
-    # =========================
-    
-    # =========================
-    minimum_travel_distance: 0.05
-    minimum_travel_heading: 0.05
+    # === Motion Thresholds ===
+    minimum_travel_distance: 0.15  # ⬆ Increased from 0.05 to reduce ghost obstacle capturing
+    minimum_travel_heading: 0.15   # ⬆ Increased from 0.05 to reduce ghost obstacle capturing
 
-    # =========================
-    # Scan handling
-    # =========================
-    minimum_time_interval: 0.1
-    scan_buffer_size: 30
-    scan_queue_size: 50
-    map_update_interval: 0.5
+    # === Scan Handling ===
+    minimum_time_interval: 0.5     # ⬆ Increased from 0.1 to limit mapping rate to max 2 Hz (reduces CPU & ghost trails)
+    scan_buffer_size: 15           # ⬇ Decreased from 30 to lower scan matching memory footprint
+    scan_queue_size: 20            # ⬇ Decreased from 50 to prevent scan processing backlog
+    map_update_interval: 3.0       # ⬆ Increased from 0.5 to publish map updates less frequently (saves CPU & bandwidth)
 
     use_scan_matching: true
     use_scan_barycenter: true
     do_loop_closing: true
 
+    # === Ceres Solver parameters (Optimized for RPi5) ===
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
     stack_size_to_use: 40000000
+
 lifecycle_manager_slam:
   ros__parameters:
     autostart: true

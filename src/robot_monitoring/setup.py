@@ -24,7 +24,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-           'ws_nav2_bridge = nav2_config.websocket_to_nav2:main',
            'position_error = robot_monitoring.position_error:main',
         ],
     },

@@ -225,7 +225,7 @@ class TM4CBridgeNode(Node):
             msg = Imu()
             msg.header.stamp.sec = sec
             msg.header.stamp.nanosec = nsec
-            msg.header.frame_id = 'imu_link'
+            msg.header.frame_id = 'imu'
 
             # Convert scaled ints back to real values (x100)
             msg.linear_acceleration.x = ax / 100.0

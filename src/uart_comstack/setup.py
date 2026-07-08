@@ -45,7 +45,7 @@ setup(
     entry_points={
         'console_scripts': [
             'tm4c_bridge = uart_comstack.tm4c_bridge:main',
-            'uart_comstack_node = uart_comstack.uart_comstack_node:main',
+            'uart_debug_standalone = uart_comstack.uart_debug_standalone:main',
             'odometry_node = uart_comstack.odometry_node:main',
             'gps_node = uart_comstack.gps_node:main',
         ],
